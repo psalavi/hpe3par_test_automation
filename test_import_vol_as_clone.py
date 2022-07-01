@@ -74,9 +74,8 @@ def test_import_vol_as_clone_sanity():
         #    hpe3par_cli.logout()
 
 
+@pytest.mark.skip_array("primera")
 def test_thin_true_comp_import_vol():
-    if int(globals.hpe3par_version[0:1]) >= 4:
-        pytest.skip("Skipped on Primera/Alletra array")
     yml = "%s/import_vol_as_clone/import-vol-thin-true-comp.yml" % globals.yaml_dir
     sc = None
     pvc = None

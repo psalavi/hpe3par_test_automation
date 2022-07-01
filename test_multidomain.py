@@ -474,18 +474,17 @@ def run_pod_bkp(yml, hpe3par_cli, protocol):
 @pytest.fixture(autouse=True)
 def edit_node_properties():
     yaml_file_list = ['MD-cpg-1-domain-no.yml', 'MD-cpg-2-domain-x.yml', 'MD-cpg-3-domain-x.yml', 'MD-cpg-4-domain-y.yml']
-    if globals.platform == 'os':
-        command= "oc get node --no-headers=true"
-    else:
-        command = "kubectl get node --no-headers=true"
-    list_nodes = manager.get_command_output_string(command)
+    node_list = manager.hpe_list_node_objects()
+    master_node = False
     worker_nodes = []
-    for node in list_nodes.split('\n'):
-        tmp_node = {}
-        if not node == '':
-            if node.split()[2] not in ['master', 'control-plane','control-plane,master']:
-                tmp_node['name'] = node.split()[0]
-                worker_nodes.append(tmp_node)
+    for node in node_list.items:
+        master_node = False
+        for address in node.status.addresses:
+            if address.type == 'InternalIP' and address.address == globals.master_node_ip:
+                master_node = True
+                break
+        if not master_node:
+            worker_nodes.append(node.metadata.name)
  
     for yml_file in yaml_file_list:
         yml = "%s/%s" % (globals.yaml_dir, yml_file)
@@ -493,7 +492,7 @@ def edit_node_properties():
             elements = list(yaml.safe_load_all(f))
             for el in elements:
                 if str(el.get('kind')) == "Pod":
-                    el['spec']['nodeName'] = worker_nodes[0]['name']
+                    el['spec']['nodeName'] = worker_nodes[0]
 
         with open(yml, 'w') as out:
             yaml.dump_all(elements, out, default_flow_style=False, sort_keys=False)

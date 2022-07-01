@@ -1,3 +1,4 @@
+from urllib import response
 import pytest
 import yaml
 from kubernetes import client, config
@@ -14,15 +15,54 @@ import logging
 import globals
 import inspect
 
-config.load_kube_config()
-k8s_storage_v1 = client.StorageV1Api()
-k8s_core_v1 = client.CoreV1Api()
-k8s_api_extn_v1 = client.ApiextensionsV1Api()
-k8s_rbac_auth_v1 = client.RbacAuthorizationV1Api()
-k8s_apps_v1 = client.AppsV1Api()
-
 timeout = 180
 
+k8s_storage_v1 = None
+k8s_core_v1 = None
+k8s_api_extn_v1 = None
+k8s_rbac_auth_v1 = None
+k8s_apps_v1 = None
+k8s_custom_obj = None
+
+def load_kube_config():
+    global k8s_storage_v1, k8s_core_v1, k8s_api_extn_v1, k8s_rbac_auth_v1, k8s_apps_v1, k8s_custom_obj
+    if globals.master_node_ip is None:
+        config.load_kube_config()
+        k8s_storage_v1 = client.StorageV1Api()
+        k8s_core_v1 = client.CoreV1Api()
+        k8s_api_extn_v1 = client.ApiextensionsV1Api()
+        k8s_rbac_auth_v1 = client.RbacAuthorizationV1Api()
+        k8s_apps_v1 = client.AppsV1Api()
+        k8s_custom_obj = client.CustomObjectsApi()
+    else:
+         # Create Log directory for test run
+        log_dir = "hpe3par_test_automation_log_" + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S-%f")
+        log_dir_path = "/tmp/" + log_dir
+        logging.getLogger().info("Creating log dir %s" % (log_dir_path))
+        os.mkdir(log_dir_path)
+
+        # kube-config file
+        kube_config_file = f"{log_dir_path}/host_kube_config_{globals.master_node_ip}"
+
+        # Connect to master node and copy kube-config
+        master_ssh_session =paramiko.SSHClient()
+        master_ssh_session.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        master_ssh_session.connect( hostname = globals.master_node_ip,
+                                    username = globals.master_node_username,
+                                    password = globals.master_node_password
+                                    )
+        master_ftp_session = master_ssh_session.open_sftp()
+        master_ftp_session.get('/root/.kube/config', kube_config_file)
+        master_ftp_session.close()
+
+        # load config
+        config.load_kube_config(config_file = kube_config_file)
+        k8s_storage_v1 = client.StorageV1Api()
+        k8s_core_v1 = client.CoreV1Api()
+        k8s_api_extn_v1 = client.ApiextensionsV1Api()
+        k8s_rbac_auth_v1 = client.RbacAuthorizationV1Api()
+        k8s_apps_v1 = client.AppsV1Api()
+        k8s_custom_obj = client.CustomObjectsApi()
 
 def hpe_create_sc_object(yml):
     try:
@@ -82,12 +122,17 @@ def hpe_create_pod_object(yml):
           logging.getLogger().error("Exception while creating pod :: %s" % e)
           raise e
 
-def hpe_connect_pod_container(name, command):
+def hpe_connect_pod_container(pod_name, command):
     try: 
         namespace = globals.namespace
-        api_response = stream(k8s_core_v1.connect_get_namespaced_pod_exec, name=name,namespace=namespace,command=command, stderr=True, stdin=False, stdout=True, tty=False)
-        return api_response
-    except client.rest.ApiException as e:
+        if globals.platform == 'os':
+            exec_command = "oc exec  --namespace %s -i  %s -- /bin/bash -c '%s'"%(namespace,pod_name,command)
+        else:
+            exec_command = "kubectl exec  --namespace %s -i  %s -- /bin/bash -c '%s'"%(namespace,pod_name,command)
+        output = get_command_output(globals.master_node_ip,exec_command)
+        logging.getLogger().info(output)
+        return output
+    except Exception as e:
           logging.getLogger().error("Exception while connecting to pod :: %s" % e)
           raise e
 
@@ -680,10 +725,17 @@ def hpe_list_crds():
 def get_node_crd(node_name):
     try:
         logging.getLogger().info("\nReading CRD for %s " % node_name)
-        command = "kubectl get hpenodeinfos %s -o json" % node_name
+        """command = "kubectl get hpenodeinfos %s -o json" % node_name
         result = get_command_output_string(command)
         crd = json.loads(result)
         # print(crd)
+        return crd"""
+
+        crd_det = get_crd_details('hpenodeinfo')
+        crd = k8s_custom_obj.get_cluster_custom_object(group=crd_det.spec.group,
+                                                                version=crd_det.status.stored_versions[0],
+                                                                plural=crd_det.status.accepted_names.plural,
+                                                                name=node_name)
         return crd
     except Exception as e:
         logging.getLogger().error("Exception %s while fetching crd for node %s " % (e, node_name))
@@ -708,10 +760,10 @@ def verify_node_crd_chap(crd_name, **kwargs):
         raise e
 
 
-def create_crd(yml, crd_name):
+def create_crd(yml, crd_name, namespace=None):
     try:
         logging.getLogger().info("Creating crd %s ..." % crd_name)
-        if globals.platform == 'os':
+        """if globals.platform == 'os':
             command = "oc create -f " + yml
         else:
             command = "kubectl create -f " + yml
@@ -720,16 +772,39 @@ def create_crd(yml, crd_name):
         if str(output).startswith(crd_name) and str(output).endswith("created\n"):
             return True
         else:
-            return False
+            return False"""
+        """k8s_snapshot_crds = ['volumesnapshotclasses', 'volumesnapshotcontents', 'volumesnapshots']
+        hpe_crds = ['hpereplicationdeviceinfos', 'hpenodeinfos', 'hpesnapshotgroupinfos', 'hpevolumegroupinfos', 'hpevolumeinfos',
+        'snapshotgroupclasses', 'snapshotgroupcontents', 'snapshotgroups', 'volumegroupclasses', 'volumegroupcontents',
+        'volumegroups']"""
+        crd_added = False
+        with open(yml) as f:
+            yaml_items = list(yaml.safe_load_all(f))
+            for yaml_obj in yaml_items:
+                crd_det = None
+                """if yaml_obj.get('kind').lower() in globals.k8s_snapshot_crds:
+                    crd_det = get_crd_details(yaml_obj.get('kind').lower()+'.snapshot.storage.k8s.io')
+                elif yaml_obj.get('kind').lower() in globals.hpe_crds:
+                    crd_det = get_crd_details(yaml_obj.get('kind').lower()+'.storage.hpe.com')"""
+                if yaml_obj.get('kind').lower() == crd_name or yaml_obj.get('kind').lower() in crd_name:
+                     crd_det = get_crd_details(yaml_obj.get('kind'))
+                if crd_det is not None:
+                    print
+                    if namespace is not None:
+                        k8s_custom_obj.create_namespaced_custom_object(namespace=namespace, body=yaml_obj, group=crd_det.spec.group, version=crd_det.spec.versions[0].name ,plural=crd_det.spec.names.plural)
+                    else:
+                        k8s_custom_obj.create_cluster_custom_object(body=yaml_obj, group=crd_det.spec.group, version=crd_det.spec.versions[0].name, plural=crd_det.spec.names.plural)
+                    crd_added = True
+        return crd_added
     except Exception as e:
         logging.getLogger().error("Exception while creating crd %s :: %s" % (crd_name, e))
         raise e
 
 
-def hpe_delete_crd(yml, crd_name):
+def delete_crd(yml, crd_name, namespace=None):
     try:
         logging.getLogger().info("Deleting crd %s ..." % crd_name)
-        if globals.platform == 'os':
+        """if globals.platform == 'os':
             command = "oc delete -f " + yml
         else:
             command = "kubectl delete -f " + yml
@@ -738,7 +813,29 @@ def hpe_delete_crd(yml, crd_name):
         if str(output).startswith(crd_name) and str(output).endswith("deleted\n"):
             return True
         else:
-            return False
+            return False"""
+        crd_deleted = False
+        with open(yml) as f:
+            yaml_items = list(yaml.safe_load_all(f))
+            for yaml_obj in yaml_items:
+                crd_det = None
+                """if yaml_obj.get('kind').lower() in globals.k8s_snapshot_crds:
+                    crd_det = get_crd_details(yaml_obj.get('kind').lower()+'.snapshot.storage.k8s.io')
+                elif yaml_obj.get('kind').lower() in globals.hpe_crds:
+                    crd_det = get_crd_details(yaml_obj.get('kind').lower()+'.storage.hpe.com')"""
+                if yaml_obj.get('kind').lower() == crd_name or yaml_obj.get('kind').lower() in crd_name:
+                     crd_det = get_crd_details(yaml_obj.get('kind').lower())
+                if crd_det is not None:
+                    name = yaml_obj['metadata']['name']
+                    if namespace is not None:
+                        k8s_custom_obj.delete_namespaced_custom_object(namespace=namespace, name=name, group=crd_det.spec.group,
+                        version=crd_det.status.stored_versions[0] ,plural=crd_det.status.accepted_names.plural)
+                    else:
+                        k8s_custom_obj.delete_cluster_custom_object(group=crd_det.spec.group,
+                        version=crd_det.status.stored_versions[0], plural=crd_det.status.accepted_names.plural, name=name)
+                    crd_deleted = True
+
+        return crd_deleted
     except Exception as e:
         logging.getLogger().error("Exception while deleting crd %s " % e)
 
@@ -935,7 +1032,7 @@ def create_secret(yml, namespace):
 
 def get_pvc_crd(pvc_name):
     try:
-        # print("\nReading CRD for %s " % pvc_name)
+        """# print("\nReading CRD for %s " % pvc_name)
         if globals.platform == 'os':
             command = "oc get hpevolumeinfos %s -o json" % pvc_name
         else:
@@ -943,11 +1040,35 @@ def get_pvc_crd(pvc_name):
         result = get_command_output_string(command)
         crd = json.loads(result)
         # print(crd)
+        return crd"""
+
+        crd_det = get_crd_details('hpevolumeinfo')
+        crd = k8s_custom_obj.get_cluster_custom_object(group=crd_det.spec.group,
+                                                                version=crd_det.status.stored_versions[0],
+                                                                plural=crd_det.status.accepted_names.plural,
+                                                                name=pvc_name)
         return crd
     except Exception as e:
         #print("Exception %s while fetching crd for pvc %s " % (e, pvc_name))
         logging.getLogger().error("Exception %s while fetching crd for pvc %s " % (e, pvc_name))
 
+
+def get_crd_details(crd_name):
+        print(crd_name)
+        try:
+            crd_det = None
+            crd_list = k8s_api_extn_v1.list_custom_resource_definition()
+            for crd in crd_list.items:
+                #if crd.metadata.name == crd_name:
+                print(crd.spec.names.kind.lower()+"  ,  "+ crd.spec.names.plural.lower())
+                if crd.spec.names.kind.lower() in crd_name.lower() or crd.spec.names.plural.lower() in crd_name.lower():
+                    crd_det = crd
+                    break
+
+            return crd_det
+        except Exception as e:
+            logging.getLogger().error("Failed to get details for crd %s, error is %s " % (crd_name, e))
+            raise e
 
 def get_pvc_volume(pvc_crd):
     vol_name = pvc_crd["spec"]["record"]["Name"]
@@ -1263,38 +1384,38 @@ def get_3par_cli_client(yml):
 
 
 def get_3par_cli_client(hpe3par_ip, hpe3par_username, hpe3par_pwd):
-    logging.getLogger().info("\nIn get_3par_cli_client()")
-    array_4_x_list = ['15.213.71.140', '15.213.71.156', '15.213.66.42','10.226.74.141', '10.226.74.134']
-    array_3_x_list = ['192.168.67.5','15.212.195.246','15.212.195.247','10.50.3.21', '15.212.192.252', '10.50.3.7', '10.50.3.22', '10.50.3.9', '192.168.67.7']
+        logging.getLogger().info("\nIn get_3par_cli_client()")
+        array_4_x_list = ['15.213.71.140', '15.213.71.156', '15.213.66.42','10.226.74.141', '10.226.74.134']
+        array_3_x_list = ['192.168.67.5','15.212.195.246','15.212.195.247','10.50.3.21', '15.212.192.252', '10.50.3.7', '10.50.3.22', '10.50.3.9', '192.168.67.7']
 
-    port = None
-    if hpe3par_ip in array_3_x_list:
-        port = '8080'
-    elif hpe3par_ip in array_4_x_list:
-        port = '443'
-    else:
-        logging.getLogger().info("Array %s is not configured in manager class. Please make entry for this array." % hpe3par_ip)
-        raise Exception('ArrayNotConfigured')
-    # HPE3PAR_API_URL = "https://" + HPE3PAR_IP + ":8080/api/v1"
-    hpe3par_api_url = "https://%s:%s/api/v1" % (hpe3par_ip, port)
-    encoding = "utf-8"
-    """print("\nHPE3PAR_API_URL :: %s, HPE3PAR_IP :: %s, HPE3PAR_USERNAME :: %s, HPE3PAR_PWD :: %s" % (HPE3PAR_API_URL,
-                                                                                                  HPE3PAR_IP,
-                                                                                                  HPE3PAR_USERNAME,
-                                                                                                  (base64.b64decode(
-                                                                                                      HPE3PAR_PWD)).decode(
-                                                                                                      encoding)))"""
+        port = None
+        if hpe3par_ip in array_3_x_list:
+            port = '8080'
+        elif hpe3par_ip in array_4_x_list:
+            port = '443'
+        else:
+            logging.getLogger().info("Array %s is not configured in manager class. Please make entry for this array." % hpe3par_ip)
+            raise Exception('ArrayNotConfigured')
+        # HPE3PAR_API_URL = "https://" + HPE3PAR_IP + ":8080/api/v1"
+        hpe3par_api_url = "https://%s:%s/api/v1" % (hpe3par_ip, port)
+        encoding = "utf-8"
+        """print("\nHPE3PAR_API_URL :: %s, HPE3PAR_IP :: %s, HPE3PAR_USERNAME :: %s, HPE3PAR_PWD :: %s" % (HPE3PAR_API_URL,
+                                                                                                    HPE3PAR_IP,
+                                                                                                    HPE3PAR_USERNAME,
+                                                                                                    (base64.b64decode(
+                                                                                                        HPE3PAR_PWD)).decode(
+                                                                                                        encoding)))"""
 
-    """logging.info("\nHPE3PAR_API_URL :: %s, HPE3PAR_IP :: %s, HPE3PAR_USERNAME :: %s, HPE3PAR_PWD :: %s" % (HPE3PAR_API_URL,
-                                                                                                  HPE3PAR_IP,
-                                                                                                  HPE3PAR_USERNAME,
-                                                                                                  (base64.b64decode(
-                                                                                                      HPE3PAR_PWD)).decode(
-                                                                                                      encoding)))"""
+        """logging.info("\nHPE3PAR_API_URL :: %s, HPE3PAR_IP :: %s, HPE3PAR_USERNAME :: %s, HPE3PAR_PWD :: %s" % (HPE3PAR_API_URL,
+                                                                                                    HPE3PAR_IP,
+                                                                                                    HPE3PAR_USERNAME,
+                                                                                                    (base64.b64decode(
+                                                                                                        HPE3PAR_PWD)).decode(
+                                                                                                        encoding)))"""
 
-    hpe3par_cli = _hpe_get_3par_client_login(hpe3par_api_url, hpe3par_ip,
-                                             hpe3par_username, (base64.b64decode(hpe3par_pwd)).decode(encoding))
-    return hpe3par_cli
+        hpe3par_cli = _hpe_get_3par_client_login(hpe3par_api_url, hpe3par_ip,
+                                                hpe3par_username, (base64.b64decode(hpe3par_pwd)).decode(encoding))
+        return hpe3par_cli
 
 
 def delete_secret(name, namespace):
@@ -1798,7 +1919,8 @@ def get_kind_name(yml, kind_name):
 def create_snapclass(yml, snap_class_name='ci-snapclass'):
     try:
         logging.getLogger().info("Creating snapclass %s..." % snap_class_name)
-        if globals.platform == 'os':
+
+        """if globals.platform == 'os':
             command = "oc create -f " + yml
         else:
             command = "kubectl create -f " + yml
@@ -1809,30 +1931,87 @@ def create_snapclass(yml, snap_class_name='ci-snapclass'):
             return True
         else:
             logging.getLogger().info("Snapclass %s is not created." % snap_class_name)
-            return False
+            return False"""
+        return create_crd(yml, snap_class_name)
     except Exception as e:
         logging.getLogger().error("Exception while creating snapclass :: %s" % e)
+        raise e
+
+def get_crd_object(crd_obj_name, crd_type, namespace=None):
+        """
+        Get crd object for given type
+
+        Returns:
+            [obj]: CRD object of given type
+        """
+        try:
+            if crd_type in globals.k8s_snapshot_crds:
+                crd_type += ".snapshot.storage.k8s.io"
+            elif crd_type in globals.hpe_crds:
+                crd_type += ".storage.hpe.com"
+            crd_det = get_crd_details(crd_type)
+            group = crd_det.spec.group
+            version = crd_det.status.stored_versions[0]
+            plural = crd_det.status.accepted_names.plural
+
+            if namespace is None:
+                crd_obj = k8s_custom_obj.get_cluster_custom_object(name=crd_obj_name, group=group, version=version, plural=plural)
+            else:
+                crd_obj = k8s_custom_obj.get_namespaced_custom_object(namespace=namespace, name=crd_obj_name, group=group, version=version, plural=plural)
+
+            return crd_obj
+        except Exception as e:
+            logging.getLogger().error("Failed to get crd object for %s:%s %s " % (crd_type,crd_obj_name,e))
+            raise e
+
+
+def list_crd_object(crd_type, namespace=None):
+    """
+    List crd object for given type
+
+    Returns:
+        [obj]: CRD object list of given type
+    """
+    try:
+        crd_det = get_crd_details(crd_type)
+        group = crd_det.spec.group
+        version = crd_det.status.stored_versions[0]
+        plural = crd_det.status.accepted_names.plural
+
+        if namespace is None:
+            crd_obj = k8s_custom_obj.list_cluster_custom_object(group=group, version=version, plural=plural)
+        else:
+            crd_obj = k8s_custom_obj.list_namespaced_custom_object(namespace=namespace, group=group, version=version, plural=plural)
+
+        return crd_obj
+    except Exception as e:
+        logging.getLogger().error("Failed to list crd object for %s: %s " % (crd_type, e))
         raise e
 
 
 def verify_snapclass_created(snap_class_name='ci-snapclass'):
     try:
         logging.getLogger().info("Verify if snapclass %s is created..." % snap_class_name)
-        if globals.platform == 'os':
+        """if globals.platform == 'os':
             command = "oc get volumesnapshotclasses.snapshot.storage.k8s.io -o json"
         else:
             command = "kubectl get volumesnapshotclasses.snapshot.storage.k8s.io -o json"
         output = get_command_output_string(command)
         logging.getLogger().info(output)
         flag = False
-        crds = json.loads(output)
-        logging.getLogger().info(crds)
-        if crds["kind"] == "List":
+        crds = json.loads(output)"""
+        snap_classes = list_crd_object("volumesnapshotclasses")
+        logging.getLogger().info(snap_classes['items'])
+        """if crds["kind"] == "List":
             snap_classes = crds["items"]
             for snap_class in snap_classes:
                 logging.getLogger().info(snap_class["metadata"]["name"])
                 if str(snap_class["metadata"]["name"]) == snap_class_name:
+                    flag = True"""
+        for snap_class in snap_classes['items']:
+            if str(snap_class['metadata']['name']) == snap_class_name:
                     flag = True
+                    break
         return flag
     except Exception as e:
         logging.getLogger().error("Exception while verifying snapclass :: %s" % e)
@@ -1842,7 +2021,8 @@ def verify_snapclass_created(snap_class_name='ci-snapclass'):
 def create_snapshot(yml, snapshot_name='ci-pvc-snapshot'):
     try:
         logging.getLogger().info("Creating snapshot %s ..." % snapshot_name)
-        if globals.platform == 'os':
+
+        """if globals.platform == 'os':
             command = "oc create -f " + yml
         else:
             command = "kubectl create -f " + yml
@@ -1851,7 +2031,8 @@ def create_snapshot(yml, snapshot_name='ci-pvc-snapshot'):
         if str(output) == "volumesnapshot.snapshot.storage.k8s.io %s created\n" % snapshot_name:
             return True
         else:
-            return False
+            return False"""
+        return create_crd(yml, snapshot_name)
     except Exception as e:
         logging.getLogger().error("Exception while creating snapshot :: %s" % e)
         raise e
@@ -1860,7 +2041,7 @@ def create_snapshot(yml, snapshot_name='ci-pvc-snapshot'):
 def verify_snapshot_created(snapshot_name='ci-pvc-snapshot'):
     try:
         logging.getLogger().info("Verifying snapshot %s created..." % snapshot_name)
-        if globals.platform == 'os':
+        """if globals.platform == 'os':
             command = "oc get volumesnapshots.snapshot.storage.k8s.io -o json -n %s" % globals.namespace
         else:
             command = "kubectl get volumesnapshots.snapshot.storage.k8s.io -o json -n %s" % globals.namespace
@@ -1874,7 +2055,14 @@ def verify_snapshot_created(snapshot_name='ci-pvc-snapshot'):
             for snapshot in snapshots:
                 logging.getLogger().info(snapshot["metadata"]["name"])
                 if str(snapshot["metadata"]["name"]) == snapshot_name:
+                    flag = True"""
+        snapshots = list_crd_object("volumesnapshots", namespace=globals.namespace)
+        logging.getLogger().info(snapshots['items'])
+
+        for snapshot in snapshots['items']:
+            if str(snapshot['metadata']['name']) == snapshot_name:
                     flag = True
+                    break
         return flag
     except Exception as e:
         logging.getLogger().error("Exception while verifying snapshot :: %s" % e)
@@ -1885,7 +2073,7 @@ def verify_snapshot_ready(snapshot_name='ci-pvc-snapshot'):
     try:
         snap_uid = None
         logging.getLogger().info("Verify if snapshot is ready...")
-        if globals.platform == 'os':
+        """if globals.platform == 'os':
             command = "oc get volumesnapshots.snapshot.storage.k8s.io %s -n %s -o json" % (snapshot_name, globals.namespace)
         else:
             command = "kubectl get volumesnapshots.snapshot.storage.k8s.io %s -n %s -o json" % (snapshot_name, globals.namespace)
@@ -1905,7 +2093,14 @@ def verify_snapshot_ready(snapshot_name='ci-pvc-snapshot'):
                 flag = False
                 break
             time += 1
-            sleep(1)
+            sleep(1)"""
+        while True:
+            snapshot = get_crd_object(snapshot_name, crd_type='volumesnapshots', namespace=globals.namespace)
+            if 'status' in snapshot and 'readyToUse' in snapshot['status']:
+                if snapshot['status']['readyToUse'] is True:
+                    flag = True
+                    snap_uid = snapshot["metadata"]["uid"]
+                    break
 
         return flag, snap_uid
     except Exception as e:
@@ -1935,7 +2130,7 @@ def verify_snapshot_on_3par(hpe3par_volume, volume_name):
 def delete_snapshot(snapshot_name='ci-pvc-snapshot'):
     try:
         logging.getLogger().info("Deleting snapshot %s..." % snapshot_name)
-        if globals.platform == 'os':
+        """if globals.platform == 'os':
             command = "oc delete volumesnapshots.snapshot.storage.k8s.io %s -n %s" % (snapshot_name, globals.namespace)
         else:
             command = "kubectl delete volumesnapshots.snapshot.storage.k8s.io %s -n %s" % (snapshot_name, globals.namespace)
@@ -1944,7 +2139,12 @@ def delete_snapshot(snapshot_name='ci-pvc-snapshot'):
         if str(output) == 'volumesnapshot.snapshot.storage.k8s.io "%s" deleted\n' % snapshot_name:
             return True
         else:
-            return False
+            return False"""
+        crd_det = get_crd_details('volumesnapshot')
+        k8s_custom_obj.delete_namespaced_custom_object(namespace=globals.namespace, group=crd_det.spec.group,
+        version=crd_det.status.stored_versions[0], plural=crd_det.status.accepted_names.plural, name=snapshot_name)
+
+        return True
     except Exception as e:
         logging.getLogger().error("Exception while verifying snapshot deletion :: %s" % e)
         raise e
@@ -1953,7 +2153,7 @@ def delete_snapshot(snapshot_name='ci-pvc-snapshot'):
 def verify_snapshot_deleted(snapshot_name='ci-pvc-snapshot'):
     try:
         logging.getLogger().info("Verify if snapshot %s is deleted..." % snapshot_name)
-        if globals.platform == 'os':
+        """if globals.platform == 'os':
             command = "oc get volumesnapshots.snapshot.storage.k8s.io -o json -n %s" % globals.namespace
         else:
             command = "kubectl get volumesnapshots.snapshot.storage.k8s.io -o json -n %s" % globals.namespace
@@ -1966,6 +2166,12 @@ def verify_snapshot_deleted(snapshot_name='ci-pvc-snapshot'):
             for snap_class in snap_classes:
                 if snap_class["metadata"]["name"] == snapshot_name:
                     flag = False
+                    break"""
+        flag = True
+        snapshots = list_crd_object(crd_type='volumesnapshots', namespace=globals.namespace)
+        for snapshot in snapshots['items']:
+            if str(snapshot['metadata']['name']) == snapshot_name:
+                    flag = False
                     break
         return flag
     except Exception as e:
@@ -1976,7 +2182,7 @@ def verify_snapshot_deleted(snapshot_name='ci-pvc-snapshot'):
 def delete_snapclass(snapclass_name='ci-snapclass'):
     try:
         logging.getLogger().info("Deleting snapshot-class %s...")
-        if globals.platform == 'os':
+        """if globals.platform == 'os':
             command = "oc delete volumesnapshotclasses %s" % snapclass_name
         else:
             command = "kubectl delete volumesnapshotclasses %s" % snapclass_name
@@ -1985,7 +2191,11 @@ def delete_snapclass(snapclass_name='ci-snapclass'):
         if str(output) == 'volumesnapshotclass.snapshot.storage.k8s.io "%s" deleted\n' % snapclass_name:
             return True
         else:
-            return False
+            return False"""
+        crd_det = get_crd_details('volumesnapshotclass')
+        k8s_custom_obj.delete_cluster_custom_object(group=crd_det.spec.group, version=crd_det.status.stored_versions[0], plural=crd_det.status.accepted_names.plural, name=snapclass_name)
+
+        return True
     except Exception as e:
         logging.getLogger().error("Exception while verifying snapclass deletion :: %s" % e)
         raise e
@@ -1994,7 +2204,7 @@ def delete_snapclass(snapclass_name='ci-snapclass'):
 def verify_snapclass_deleted(snapclass_name='ci-snapclass'):
     try:
         logging.getLogger().info("Verify if snapshot-class %s is deleted..." % snapclass_name)
-        if globals.platform == 'os':
+        """if globals.platform == 'os':
             command = "oc get volumesnapshotclasses -o json"
         else:
             command = "kubectl get volumesnapshotclasses -o json"
@@ -2007,6 +2217,12 @@ def verify_snapclass_deleted(snapclass_name='ci-snapclass'):
             for snap_class in snap_classes:
                 if snap_class["metadata"]["name"] == snapclass_name:
                     flag = False
+                    break"""
+        flag = True
+        snapclasses = list_crd_object(crd_type='volumesnapshotclasses')
+        for snapclass in snapclasses['items']:
+            if str(snapclass['metadata']['name']) == snapclass_name:
+                    flag = False
                     break
         return flag
     except Exception as e:
@@ -2014,9 +2230,9 @@ def verify_snapclass_deleted(snapclass_name='ci-snapclass'):
         raise e
 
 
-def verify_crd_exists(crd_name, crd_type):
+def verify_crd_exists(crd_name, crd_type, namespace=None):
     try:
-        #print("Verifying if CRD for %s is deleted..." % crd_name)
+        """#print("Verifying if CRD for %s is deleted..." % crd_name)
         flag = False
         if globals.platform == 'os':
             command = "oc get %s -o json" % crd_type
@@ -2033,6 +2249,22 @@ def verify_crd_exists(crd_name, crd_type):
                 if str(crd_obj["metadata"]["name"]) == crd_name:
                     flag = True
                     break
+        return flag"""
+        flag = False
+        crd_det = get_crd_details(crd_type)
+        if namespace is None:
+            crd_in_cluster = k8s_custom_obj.list_cluster_custom_object(group=crd_det.spec.group,
+                                                                    version=crd_det.status.stored_versions[0],
+                                                                    plural=crd_det.status.accepted_names.plural)
+        else:
+            crd_in_cluster = k8s_custom_obj.list_namespaced_custom_object(namespace=namespace, group=crd_det.spec.group,
+                                                                    version=crd_det.status.stored_versions[0],
+                                                                    plural=crd_det.status.accepted_names.plural)
+        for crd in crd_in_cluster['items']:
+            if str(crd['metadata']['name']) == crd_name:
+                flag = True
+                break
+
         return flag
     except Exception as e:
         logging.getLogger().error("Exception while verifying CRD for clone pvc  :: %s" % e)
@@ -2062,7 +2294,7 @@ def check_if_crd_deleted(crd_name, crd_type, timeout_set=None):
 
         return flag
     except Exception as e:
-        logging.getLogger().error("Exception %s while verifying if CRD %s of %s is deleted  :: %s" % (e, crd_name, crd_type))
+        logging.getLogger().error("Exception while verifying if CRD %s of %s is deleted  :: %s" % (crd_name, crd_type, e))
         raise e
 
 
@@ -2109,14 +2341,18 @@ def patch_pvc(name, namespace, patch_json):
 
 def uncorden_node(name):
     try:
-        if globals.platform == 'os':
+        """if globals.platform == 'os':
             command = "oc adm uncordon %s " % name
         else:
             command = "kubectl uncordon %s " % name
         logging.getLogger().info(command)
-        output = get_command_output_string(command)
+        #output = get_command_output_string(command)
+        output = get_command_output(globals.master_node_ip, command, globals.master_node_password)
         logging.getLogger().info(output)
-        return output
+        return output"""
+
+        patch_json = {"spec":{"unschedulable":"null"}}
+        return k8s_core_v1.patch_node(name=name, body=patch_json)
     except Exception as e:
         logging.getLogger().error("Exception while uncorden Node %s\n%s" % (name, e))
         # logging.error("Exception %s while verifying if PVC CRD %s is published  :: %s" % (e, crd_name))
@@ -2125,14 +2361,17 @@ def uncorden_node(name):
 
 def corden_node(name):
     try:
-        if globals.platform == 'os':
+        """if globals.platform == 'os':
             command = "oc adm cordon %s " % name
         else:
             command = "kubectl cordon %s " % name
         logging.getLogger().info(command)
-        output = get_command_output_string(command)
+        #output = get_command_output_string(command)
+        output = get_command_output(globals.master_node_ip, command, globals.master_node_password)
         logging.getLogger().info(output)
-        return output
+        return output"""
+        patch_json = {"spec":{"unschedulable":"true"}}
+        return k8s_core_v1.patch_node(name=name, body=patch_json)
     except Exception as e:
         logging.getLogger().error("Exception while corden Node %s\n%s" % (name, e))
         # logging.error("Exception %s while verifying if PVC CRD %s is published  :: %s" % (e, crd_name))
@@ -2347,13 +2586,15 @@ def check_status_from_events(kind, name, namespace, uid, reasons=['ProvisioningS
             if got_status is True:
                 break
             # events_list = k8s_core_v1.list_event_for_all_namespaces()
-            if globals.platform == 'os':
+            """if globals.platform == 'os':
                 command = "oc get events --sort-by='{.metadata.creationTimestamp}' -o json -n %s" % namespace
             else:
-                command = "kubectl get events --sort-by='{.metadata.creationTimestamp}' -o json -n %s" % namespace
+                command = "kubectl get events --sort-by='{.metadata.creationTimestamp}' -o json -n %s" % namespace"""
+
 
             # print(command)
-            output = get_command_output_string(command)
+            """#output = get_command_output_string(command)
+            output = k8s_core_v1.list_namespaced_event(namespace)
             events_json = json.loads(output)
             if events_json["kind"] == "List":
                 event_list_from_json = events_json["items"]
@@ -2374,7 +2615,16 @@ def check_status_from_events(kind, name, namespace, uid, reasons=['ProvisioningS
                             status = event['reason']
                             message = event['message']
                             got_status = True
-                            break'''
+                            break'''"""
+            event_list = k8s_core_v1.list_namespaced_event(namespace)
+            for event in event_list.items:
+                if event.involved_object.kind == kind and event.involved_object.name == name and \
+                        event.involved_object.namespace == namespace and event.involved_object.uid == uid:
+                    if event.reason in reasons:
+                        status = event.reason
+                        message = event.message
+                        got_status = True
+                        break
 
         return status, message
     except Exception as e:
