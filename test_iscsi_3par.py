@@ -340,7 +340,7 @@ def test_snapshot_sanity():
         logging.getLogger().info(globals.hpe3par_cli)
         volume = manager.get_volume_from_array(globals.hpe3par_cli, volume_name)
         assert volume is not None, "Volume is not created on 3PAR for pvc %s " % volume_name
-
+        #import pdb;pdb.set_trace();
         #assert manager.create_snapclass("%s/snapshot-class.yaml" % globals.yaml_dir) is True, 'Snapclass ci-snapclass is not created.'
         manager.create_snapclass("%s/snapshot-class.yaml" % globals.yaml_dir)
 
