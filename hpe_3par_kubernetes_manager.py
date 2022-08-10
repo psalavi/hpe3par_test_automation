@@ -653,6 +653,7 @@ def verify_host_properties(hpe3par_host, **kwargs):
 
 def get_command_output(node_name, command, password=None):
     try:
+        node_name = get_valid_node_name(node_name)
         logging.getLogger().info("Executing command...")
         ssh_client = paramiko.SSHClient()
         # print("ssh client %s " % ssh_client)
@@ -1433,16 +1434,14 @@ def delete_secret(name, namespace):
 
 def verify_pod_node(hpe3par_vlun, pod):
     try:
+        node_from_array = get_valid_node_name(hpe3par_vlun['hostname'])
         #print("Verifying node where pod is mounted received from 3PAR and cluster are same...")
         logging.getLogger().info("Verifying node where pod is mounted received from 3PAR and cluster are same...")
         pod_node_name = pod.spec.node_name
-        dot_index = pod_node_name.find('.')
-        if dot_index > 0:
-            pod_node_name = pod_node_name[0:dot_index]
         #print(f"Node from pod object:Node from array :: {pod_node_name}:{hpe3par_vlun['hostname']}")
-        logging.getLogger().info(f"Node from pod object:Node from array :: {pod_node_name}:{hpe3par_vlun['hostname']}")
+        logging.getLogger().info(f"Node from pod object:Node from array :: {pod_node_name}:{node_from_array}")
         #print("Node from array :: %s " % hpe3par_vlun['hostname'])
-        return pod_node_name == hpe3par_vlun['hostname']
+        return pod_node_name == node_from_array
     except Exception as e:
         #print("Exception while verifying node names where pod is mounted :: %s" % e)
         logging.getLogger().error("Exception while verifying node names where pod is mounted :: %s" % e)
@@ -1591,6 +1590,16 @@ def verify_by_path(iscsi_ips, node_name, pvc_crd, hpe3par_vlun):
         logging.getLogger().error("Exception while verifying partitions for iscsi ip(s) :: %s" % e)
         raise e
 
+def get_valid_node_name(node_name):
+        list_nodes = hpe_list_node_objects()
+        node_list = []
+        for item in list_nodes.items:
+            node_list.append(item.status.addresses[0].address)
+            node_list.append(item.status.addresses[1].address)
+        for valid_node_name in node_list:
+            if node_name in valid_node_name:
+                return valid_node_name
+
 
 def verify_multipath(hpe3par_vlun, disk_partition):
     #print("\n########################### verify_multipath ###########################")
@@ -1598,7 +1607,9 @@ def verify_multipath(hpe3par_vlun, disk_partition):
     partition_map = {'active': [], 'ghost': []}
     try:
         vv_wwn = hpe3par_vlun['volumeWWN']
-        node_name = hpe3par_vlun['hostname']
+        fetched_node_name = hpe3par_vlun['hostname']
+        logging.getLogger().info(fetched_node_name)
+        node_name = get_valid_node_name(fetched_node_name)
 
         #print("Fetching DM(s)...")
         logging.getLogger().info("Fetching DM(s)...")
@@ -2000,6 +2011,7 @@ def verify_snapclass_created(snap_class_name='ci-snapclass'):
         logging.getLogger().info(output)
         flag = False
         crds = json.loads(output)"""
+        flag = False
         snap_classes = list_crd_object("volumesnapshotclasses")
         logging.getLogger().info(snap_classes['items'])
         """if crds["kind"] == "List":
@@ -2009,6 +2021,8 @@ def verify_snapclass_created(snap_class_name='ci-snapclass'):
                 if str(snap_class["metadata"]["name"]) == snap_class_name:
                     flag = True"""
         for snap_class in snap_classes['items']:
+            print("#####################")
+            print(snap_class)
             if str(snap_class['metadata']['name']) == snap_class_name:
                     flag = True
                     break
@@ -2022,16 +2036,16 @@ def create_snapshot(yml, snapshot_name='ci-pvc-snapshot'):
     try:
         logging.getLogger().info("Creating snapshot %s ..." % snapshot_name)
 
-        """if globals.platform == 'os':
-            command = "oc create -f " + yml
-        else:
-            command = "kubectl create -f " + yml
-        output = get_command_output_string(command)
-        logging.getLogger().info(output)
-        if str(output) == "volumesnapshot.snapshot.storage.k8s.io %s created\n" % snapshot_name:
-            return True
-        else:
-            return False"""
+        # if globals.platform == 'os':
+        #     command = "oc create -f " + yml
+        # else:
+        #     command = "kubectl create -f " + yml
+        # output = get_command_output_string(command)
+        # logging.getLogger().info(output)
+        # if str(output) == "volumesnapshot.snapshot.storage.k8s.io %s created\n" % snapshot_name:
+        #     return True
+        # else:
+        #     return False
         return create_crd(yml, snapshot_name)
     except Exception as e:
         logging.getLogger().error("Exception while creating snapshot :: %s" % e)
@@ -2056,6 +2070,7 @@ def verify_snapshot_created(snapshot_name='ci-pvc-snapshot'):
                 logging.getLogger().info(snapshot["metadata"]["name"])
                 if str(snapshot["metadata"]["name"]) == snapshot_name:
                     flag = True"""
+        flag = False
         snapshots = list_crd_object("volumesnapshots", namespace=globals.namespace)
         logging.getLogger().info(snapshots['items'])
 
@@ -3088,3 +3103,147 @@ def is_test_passed_with_encryption(status, enc_secret_name, yml):
             return True
         else:
             return False
+
+
+def get_worker_nodes():
+    worker_nodes = []
+    try:
+        node_list = k8s_core_v1.list_node()
+        for node in node_list.items:
+            master_node = False
+            for address in node.status.addresses:
+                if address.type == 'InternalIP' and address.address == '192.168.91.4':
+                    master_node = True
+                    break
+            if not master_node:
+                worker_nodes.append(node.metadata.name)        
+        return worker_nodes
+    except client.rest.ApiException as e:
+        logging.getLogger().error("Exception :: %s" % e)
+        raise e
+
+def scale_stateful_set(replica_count, statefulset_name, namespace):
+    try:
+        response = k8s_apps_v1.patch_namespaced_stateful_set_scale(name=statefulset_name, namespace=namespace,
+        body={'spec': {'replicas': replica_count}})
+        logging.getLogger().info(response)
+    except client.rest.ApiException as e:
+        logging.getLogger().error("Exception in scaling statefulset :: %s" % e)
+        raise e
+
+def create_volume_group(yml, volume_group_name):
+    try:
+        logging.getLogger().info("Creating Volume Group  %s..." % volume_group_name)
+        return create_crd(yml, 'volumegroup', namespace=globals.namespace)
+    except Exception as e:
+        logging.getLogger().error("Exception while creating volume group :: %s" % e)
+        raise e
+
+def delete_volume_group_from_yaml(yml):
+    try:
+        volume_group_name = None
+        with open(yml) as f:
+            yaml_items = list(yaml.safe_load_all(f))
+            for yaml_obj in yaml_items:
+                if yaml_obj.get('kind').lower() in ['volumegroup', 'volumegroups.storage.hpe.com']:
+                    volume_group_name = yaml_obj['metadata']['name']
+                    break
+        if volume_group_name is not None:
+            return delete_volume_group(volume_group_name)
+        else:
+            raise Exception("Name not found for volume group in yaml :: %s" % yml)
+    except Exception as e:
+        logging.getLogger().error("Exception while deleting volume group class :: %s" % e)
+        raise e
+
+def delete_volume_group(volume_group_name):
+    try:
+        logging.getLogger().info("Deleting Volume Group %s..." % volume_group_name)
+        crd_det = get_crd_details('volumegroup')
+        k8s_custom_obj.delete_namespaced_custom_object(namespace=globals.namespace, group=crd_det.spec.group, 
+        version=crd_det.spec.versions[0].name, plural=crd_det.spec.names.plural, name=volume_group_name)
+        return True
+    except Exception as e:
+        logging.getLogger().error("Exception while deleting volume group :: %s" % e)
+        raise e
+
+
+def verify_volume_group_deleted(volume_group_name):
+    try:
+        logging.getLogger().info("Verify if volume group %s is deleted..." % volume_group_name)
+        flag = True
+        volume_groups = list_crd_object(crd_type='volumegroups', namespace=globals.namespace)
+        for volume_group in volume_groups['items']:
+            if str(volume_group['metadata']['name']) == volume_group_name:
+                    flag = False
+                    break
+        return flag
+    except Exception as e:
+        logging.getLogger().error("Exception while verifying volume group deletion :: %s" % e)
+        raise e
+
+def delete_volume_group_class_from_yaml(yml):
+    try:
+        volume_group_class_name = None
+        with open(yml) as f:
+            yaml_items = list(yaml.safe_load_all(f))
+            for yaml_obj in yaml_items:
+                if yaml_obj.get('kind').lower() in ['volumegroupclass', 'volumegroupclasses.storage.hpe.com']:
+                    volume_group_class_name = yaml_obj['metadata']['name']
+                    break
+        if volume_group_class_name is not None:
+            return delete_volume_group_class(volume_group_class_name)
+        else:
+            raise Exception("Name not found for volume group class in yaml :: %s" % yml)
+    except Exception as e:
+        logging.getLogger().error("Exception while deleting volume group class :: %s" % e)
+        raise e
+
+def create_volume_group_class(yml, volume_group_class_name):
+    try:
+        logging.getLogger().info("Creating Volume Group Class %s..." % volume_group_class_name)
+        return create_crd(yml, 'volumegroupclass')
+    except Exception as e:
+        logging.getLogger().error("Exception while creating volume group class :: %s" % e)
+        raise e
+
+def delete_volume_group_class(volume_group_class_name):
+    try:
+        logging.getLogger().info("Deleting Volume Group Class %s..." % volume_group_class_name)
+        crd_det = get_crd_details('volumegroupclass')
+        k8s_custom_obj.delete_cluster_custom_object(group=crd_det.spec.group, 
+        version=crd_det.status.stored_versions[0], plural=crd_det.status.accepted_names.plural, name=volume_group_class_name)
+        return True
+    except Exception as e:
+        logging.getLogger().error("Exception while deleting volume group class :: %s" % e)
+        raise e
+
+
+def verify_volume_group_class_deleted(volume_group_class_name):
+    try:
+        logging.getLogger().info("Verify if volume group %s is deleted..." % volume_group_class_name)
+        flag = True
+        volume_group_classes = list_crd_object(crd_type='volumegroupclasses')
+        for volume_group_class in volume_group_classes['items']:
+            if str(volume_group_class['metadata']['name']) == volume_group_class_name:
+                    flag = False
+                    break
+        return flag
+    except Exception as e:
+        logging.getLogger().error("Exception while verifying volume group class deletion :: %s" % e)
+        raise e
+
+def verify_volume_group_class_deleted_from_yaml(yml):
+    try:
+        volume_group_class_name = None
+        with open(yml) as f:
+            yaml_items = list(yaml.safe_load_all(f))
+            for yaml_obj in yaml_items:
+                if yaml_obj.get('kind').lower() == 'volumegroupclasses':
+                    volume_group_class_name = yaml_obj['metadata']['name']
+                    break
+
+        return verify_volume_group_class_deleted(volume_group_class_name)
+    except Exception as e:
+        logging.getLogger().error("Exception while verifying volume group class deletion :: %s" % e)
+        raise e
