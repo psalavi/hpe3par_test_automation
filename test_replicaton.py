@@ -842,11 +842,7 @@ def test_scale_with_statefulset():
 
 def scale_up(replica_count, pvc_name_pat, pod_name_pat, primary_rcg_name, statefulset_name):
     global pod_map
-
-    command = "kubectl scale --replicas=%s statefulset/%s -n %s" % (replica_count, statefulset_name,
-                                                                    globals.namespace)
-    logging.getLogger().info("Command :: %s" % command)
-    output = manager.get_command_output_string(command)
+    output = manager.scale_stateful_set(replica_count, statefulset_name, globals.namespace)
     logging.getLogger().info("Scaled :: %s" % output)
 
     logging.getLogger().info("================ Now verify after scaling to %s" % replica_count)
@@ -858,21 +854,7 @@ def scale_up(replica_count, pvc_name_pat, pod_name_pat, primary_rcg_name, statef
 def scale_down(replica_count, pvc_name_pat, pod_name_pat, primary_rcg_name, secondary_rcg_name,
                statefulset_name):
     global pod_map
-
-    # replica_count = 30
-    # pod_map len = 50
-    # get list of pods from 30 t0 50 -> replica_count to len(pod_map)
-    '''
-    pod_map[pod_name] = {'vol_name_array': volume_name,
-                             'pod': pod_obj,
-                             'pvc': pvc_obj,
-                             'vlun': hpe3par_vlun,
-                             'disk_partition': disk_partition}
-    '''
-    command = "kubectl scale --replicas=%s statefulset/%s -n %s" % (replica_count, statefulset_name,
-                                                                    globals.namespace)
-    logging.getLogger().info("Command :: %s" % command)
-    output = manager.get_command_output_string(command)
+    output = manager.scale_stateful_set(replica_count, statefulset_name, globals.namespace)
     logging.getLogger().info("Scaled :: %s" % output)
 
     logging.getLogger().info("================ Now verify after scaling to %s" % replica_count)
@@ -1423,25 +1405,16 @@ def delete_verify_sc(sc):
 
 def delete_verify_device_info(device_info_yaml, rcg_name):
     # Delete replication crd
-    manager.hpe_delete_crd(device_info_yaml, "HPEReplicationDeviceInfo")
+    manager.delete_crd(device_info_yaml, "HPEReplicationDeviceInfo")
     # Verify crd for rcg deleted
     assert manager.check_if_crd_deleted(rcg_name, "hpereplicationdeviceinfo") is True, \
         "CRD %s of %s is not deleted yet. Taking longer..." % (rcg_name, 'hpereplicationdeviceinfo')
 
 
 def delete_verify_obj(device_info_yaml, volume_name, primary_rcg_name, secondary_rcg_name, sc, pvc, pod, iscsi_ips, hpe3par_vlun, disk_partition, pvc_crd):
-    '''global sc, pvc_obj, pod_obj, iscsi_ips, disk_partition
-    global device_info_yaml, volume_name, hpe3par_vlun, rcg_name, secondary_rcg_name
-    '''
-    # delete pod
     delete_pod(pod, pvc.spec.volume_name)
-
-    '''logging.getLogger().info("device_info_yaml, volume_name, primary_rcg_name, secondary_rcg_name, sc, pvc, "
-                             "pod, iscsi_ips, hpe3par_vlun, disk_partition :: %s, %s, %s, %s, %s, %s, %s, %s, %s, %s" % (device_info_yaml, volume_name, primary_rcg_name, secondary_rcg_name, sc, pvc, pod, iscsi_ips, hpe3par_vlun, disk_partition))'''
     # verify if vluns and multipath entries are cleared after pod is deleted
     verify_deleted_vluns(pod, pvc_crd, iscsi_ips, hpe3par_vlun, disk_partition)
-
-    # pdb.set_trace()
 
     # delete pvc and verify if deleted from primary and secondary arrays
     delete_verify_pvc(pvc, volume_name)

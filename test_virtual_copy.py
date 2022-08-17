@@ -20,25 +20,22 @@ def test_virtual_copyOf_tpvv_vol_sanity():
     create_virtual_copyOf(base_yml,snap_yml)
 
 
+@pytest.mark.skip_array("3par")
 def test_virtual_copyOf_reduce_vol():
-    if int(globals.hpe3par_version[0:1]) == 3:
-        pytest.skip("Skipped on 3PAR array")
     base_yml = '%s/virtual-copy/virtual-copy-base-vol-tc2.yml' % globals.yaml_dir
     snap_yml = '%s/virtual-copy/virtual-copy-snap-vol-tc2.yml' % globals.yaml_dir
     create_virtual_copyOf(base_yml,snap_yml)
 
 
+@pytest.mark.skip_array("primera")
 def test_virtual_copyOf_tdvv_vol():
-    if int(globals.hpe3par_version[0:1]) >= 4:
-        pytest.skip("Skipped on Primera/Alletra array")
     base_yml = '%s/virtual-copy/virtual-copy-base-vol-tc3.yml' % globals.yaml_dir
     snap_yml = '%s/virtual-copy/virtual-copy-snap-vol-tc3.yml' % globals.yaml_dir
     create_virtual_copyOf(base_yml,snap_yml)
 
 
+@pytest.mark.skip_array("primera")
 def test_virtual_copyOf_tdvv_compr_vol():
-    if int(globals.hpe3par_version[0:1]) >= 4:
-        pytest.skip("Skipped on Primera/Alletra array")
     base_yml = '%s/virtual-copy/virtual-copy-base-vol-tc4.yml' % globals.yaml_dir
     snap_yml = '%s/virtual-copy/virtual-copy-snap-vol-tc4.yml' % globals.yaml_dir
     create_virtual_copyOf(base_yml,snap_yml)
@@ -85,12 +82,11 @@ def create_virtual_copyOf(base_yml,snap_yml):
         time.sleep(20)
         
         # Checking base volume data
-        command = ['/bin/sh', '-c', 'ls -l /export'] 
+        command = "ls -l /export"
         data = manager.hpe_connect_pod_container(pod.metadata.name, command)
-        if any("mydata.txt" in x for x in data.split('\n')):
+        if any("mydata.txt" in x for x in data):
             isPresent = True
         assert isPresent is True, "File not present in base volume"
-            
 
         # Creating snap volume in CSI
         sc_snap = manager.create_sc(snap_yml)
@@ -105,19 +101,19 @@ def create_virtual_copyOf(base_yml,snap_yml):
         flag, snap_pod_obj = manager.check_status(timeout, snap_pod.metadata.name, kind='pod', status='Running',
                                              namespace=snap_pod.metadata.namespace)
         assert flag is True, "Snapshot volume pod mount %s status check timed out, not in Running state yet..." % snap_pod.metadata.name
+
         logging.getLogger().info("Checking snapshot volume data")
         time.sleep(20)
-
         # Validating data on snapshot volume 
         isPresent = False
-        command = ['/bin/sh', '-c', 'ls -l /export']
+        command = "ls -l /export"
         snap_data = manager.hpe_connect_pod_container(snap_pod.metadata.name, command)
-        if any("mydata.txt" in x for x in snap_data.split('\n')):
+        if any("mydata.txt" in x for x in snap_data):
             isPresent = True
         assert isPresent is True, "File on base volume not found in snap volume"
 
         isPresent = False
-        if any("mysnapdata.txt" in x for x in snap_data.split('\n')):
+        if any("mysnapdata.txt" in x for x in snap_data):
             isPresent = True
         assert isPresent is True, "File not present in snap volume"
         logging.getLogger().info("snapshot volume data check successfull")
@@ -316,8 +312,7 @@ def create_virtual_copyOf(base_yml,snap_yml):
 
 
 def cleanup(sc, pvc, pod):
-    print("====== cleanup :START =========")
-    #logging.info("====== cleanup after failure:START =========")
+    logging.info("====== cleanup :START =========")
     if pod is not None and manager.check_if_deleted(2, pod.metadata.name, "Pod", namespace=pod.metadata.namespace) is False:
         manager.delete_pod(pod.metadata.name, pod.metadata.namespace)
     if pvc is not None and manager.check_if_deleted(2, pvc.metadata.name, "PVC", namespace=pvc.metadata.namespace) is False:
@@ -326,6 +321,5 @@ def cleanup(sc, pvc, pod):
             "CRD %s of %s is not deleted yet. Taking longer..." % (pvc.spec.volume_name, 'hpevolumeinfos')
     if sc is not None and manager.check_if_deleted(2, sc.metadata.name, "SC", None) is False:
         manager.delete_sc(sc.metadata.name)
-    print("====== cleanup :END =========")
-    #logging.info("====== cleanup after failure:END =========")
+    logging.info("====== cleanup :END =========")
 

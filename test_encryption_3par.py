@@ -152,7 +152,7 @@ def pvc_create_verify(yml, **kwargs):
                         hostSeesVLUN = el['parameters']['hostSeesVLUN']
                     if 'allowVolumeExpansion' in el:
                         allowVolumeExpansion = el['allowVolumeExpansion']
-                    
+
 
         logging.getLogger().info("Check in events if volume is created...")
         status, message = manager.check_status_from_events(kind='PersistentVolumeClaim', name=pvc.metadata.name,
@@ -183,7 +183,7 @@ def pvc_create_verify(yml, **kwargs):
             if allowVolumeExpansion and kwargs['resize_after_mount'] == "false":  
                 volume_expand(pvc.metadata.name, pvc_obj)
 
- 
+
             pod = manager.create_pod(yml)
 
             flag, pod_obj = manager.check_status(timeout, pod.metadata.name, kind='pod', status='Running',
@@ -210,10 +210,10 @@ def pvc_create_verify(yml, **kwargs):
                    else:
                        assert vlun_item['type'] == globals.MATCHED_SET, "hostSeesVLUN parameter validation failed for volume %s" % pvc_obj.spec.volume_name
                logging.getLogger().info("Successfully completed hostSeesVLUN parameter check") 
-              
+
             if allowVolumeExpansion and kwargs['resize_after_mount'] == "true":
                 volume_expand(pvc.metadata.name, pvc_obj)
-                   
+
 
             # Read pvc crd again after pod creation. It will have IQN and LunId.
             pvc_crd = manager.get_pvc_crd(pvc_obj.spec.volume_name)
